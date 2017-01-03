@@ -1,0 +1,11 @@
+Uuid: ee1c45f4cc084304b2af4b7e92c0a49d
+ExtensionType: 1
+Name: Flow
+ScreenVersion: 1.08
+SerialVersion: 3
+MinPlatformVersion: 0
+ProOnly: False
+Author: Marcin Woloszyn
+ShortDescription: Provides request history view for all Burp tools.
+EntryPoint: dist/flow.jar
+BuildCommand: ant
