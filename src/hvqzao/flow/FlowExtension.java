@@ -1,4 +1,4 @@
-// Flow Burp Extension, (c) 2015-2016 Marcin Woloszyn (@hvqzao), Released under MIT license
+// Flow Burp Extension, (c) 2015-2017 Marcin Woloszyn (@hvqzao), Released under MIT license
 package hvqzao.flow;
 
 import java.awt.BorderLayout;
@@ -69,7 +69,7 @@ import javax.swing.event.DocumentListener;
 
 public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScopeChangeListener, IExtensionStateListener {
 
-    private final String version = "Flow v1.08 (2016-11-02)";
+    private final String version = "Flow v1.10 (2017-03-10)";
     //private final String versionFull = "<html>" + version + ", <a href=\"https://github.com/hvqzao/burp-flow\">https://github.com/hvqzao/burp-flow</a>, MIT license</html>";
     private static IBurpExtenderCallbacks callbacks;
     private static IExtensionHelpers helpers;
@@ -154,6 +154,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     private JScrollPane flowTableScroll;
     private boolean autoDelete = false;
     private int autoDeleteKeep = 1000;
+    private boolean autoPopulate = true;
+    private boolean modalAutoPopulate;
     private boolean modalAutoDelete;
     private int modalAutoDeleteKeep;
 
@@ -648,6 +650,10 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                                 callbacks.saveExtensionSetting("mode", String.valueOf(mode));
                                 flowFilterUpdate();
                             }
+                            if (autoPopulate != modalAutoPopulate) {
+                                autoPopulate = modalAutoPopulate;
+                                callbacks.saveExtensionSetting("autoPopulate", autoPopulate ? "1" : "0");
+                            }
                             if (autoDeleteKeep != modalAutoDeleteKeep) {
                                 autoDeleteKeep = modalAutoDeleteKeep;
                                 callbacks.saveExtensionSetting("autoDeleteKeep", String.valueOf(autoDeleteKeep));
@@ -675,31 +681,35 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                     mode = 1;
                 }
                 //
+                autoPopulate = "0".equals(callbacks.loadExtensionSetting("autoPopulate")) == false; // will default to true if not set
                 autoDeleteKeep = validateAutoDeleteKeep(callbacks.loadExtensionSetting("autoDeleteKeep"));
                 autoDelete = "1".equals(callbacks.loadExtensionSetting("autoDelete"));
                 //
 
                 //
                 flowFilterSetDefaults();
-                callbacks.printOutput("Initializing extension with contents of Burp Proxy...");
-                synchronized (flow) {
-                    int row = flow.size();
-                    IHttpRequestResponse[] history = callbacks.getProxyHistory();
-                    if (history.length > 0) {
-                        int start = 0;
-                        if (autoDelete) {
-                            start = history.length - autoDeleteKeep;
-                            if (start < 0) {
-                                start = 0;
+                callbacks.printOutput(version);
+                if (autoPopulate) {
+                    //callbacks.printOutput("Initializing extension with contents of Burp Proxy...");
+                    synchronized (flow) {
+                        int row = flow.size();
+                        IHttpRequestResponse[] history = callbacks.getProxyHistory();
+                        if (history.length > 0) {
+                            int start = 0;
+                            if (autoDelete) {
+                                start = history.length - autoDeleteKeep;
+                                if (start < 0) {
+                                    start = 0;
+                                }
                             }
+                            for (int i = start; i < history.length; i++) {
+                                flow.add(new FlowEntry(IBurpExtenderCallbacks.TOOL_PROXY, history[i]));
+                            }
+                            flowTableModel.fireTableRowsInserted(row, row);
                         }
-                        for (int i = start; i < history.length; i++) {
-                            flow.add(new FlowEntry(IBurpExtenderCallbacks.TOOL_PROXY, history[i]));
-                        }
-                        flowTableModel.fireTableRowsInserted(row, row);
                     }
                 }
-                callbacks.printOutput("Loaded.");
+                //callbacks.printOutput("Loaded.");
                 // TODO end main
             }
         });
@@ -724,76 +734,74 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     @Override
     public void processHttpMessage(int toolFlag, boolean messageIsRequest, IHttpRequestResponse messageInfo) {
 
-        // only process responses
-        /*
-        if (!messageIsRequest) {
-            if (toolFlagCaptureProcessing(toolFlag)) {
-                synchronized (flow) {
-                    int row = flow.size();
-                    // flow.add(new FlowEntry(toolFlag, callbacks.saveBuffersToTempFiles(messageInfo), helpers.analyzeRequest(messageInfo)));
-                    flow.add(new FlowEntry(toolFlag, messageInfo));
-                    flowTableModel.fireTableRowsInserted(row, row);
-                }
-            }
-        }
-         */
-        // process both requests and responses
         if (toolFlagCaptureProcessing(toolFlag)) {
             synchronized (flow) {
                 if (messageIsRequest) {
-                    int row = flow.size();
-                    flow.add(new FlowEntry(toolFlag, messageInfo));
-                    flowTableModel.fireTableRowsInserted(row, row);
-                    triggerAutoDelete();
+                    // both complete and incomplete requests
+                    if (mode == 1) {
+                        int row = flow.size();
+                        flow.add(new FlowEntry(toolFlag, messageInfo));
+                        flowTableModel.fireTableRowsInserted(row, row);
+                        triggerAutoDelete();
+                    }
                     // stdout.println("[+] " + String.valueOf(helpers.analyzeRequest(messageInfo.getHttpService(), messageInfo.getRequest()).getUrl()));
                     // stdout.println("    " + String.valueOf(flowIncomplete.size()));
                 } else {
-                    FlowEntry flowIncompleteFound = null;
-                    ArrayList<FlowEntry> flowIncompleteCleanup = new ArrayList<>();
-                    Date outdated = new Date(System.currentTimeMillis() - 5 * 60 * 1000);
-                    for (FlowEntry incomplete : FLOW_INCOMPLETE) {
-                        if (flowIncompleteFound == null) {
-                            if (incomplete.toolFlag == toolFlag && incomplete.isIncomplete() && incomplete.incomplete.equals(helpers.bytesToString(messageInfo.getRequest()))) {
-                                flowIncompleteFound = incomplete;
+                    // only requests with responses
+                    if (mode == 0) {
+                        int row = flow.size();
+                        flow.add(new FlowEntry(toolFlag, messageInfo));
+                        flowTableModel.fireTableRowsInserted(row, row);
+                        triggerAutoDelete();
+                    }
+                    if (FLOW_INCOMPLETE.size() > 0) {
+                        FlowEntry flowIncompleteFound = null;
+                        ArrayList<FlowEntry> flowIncompleteCleanup = new ArrayList<>();
+                        Date outdated = new Date(System.currentTimeMillis() - 5 * 60 * 1000);
+                        for (FlowEntry incomplete : FLOW_INCOMPLETE) {
+                            if (flowIncompleteFound == null) {
+                                if (incomplete.toolFlag == toolFlag && incomplete.isIncomplete() && incomplete.incomplete.equals(helpers.bytesToString(messageInfo.getRequest()))) {
+                                    flowIncompleteFound = incomplete;
+                                }
+                            }
+                            if (incomplete.date.before(outdated)) {
+                                flowIncompleteCleanup.add(incomplete);
                             }
                         }
-                        if (incomplete.date.before(outdated)) {
-                            flowIncompleteCleanup.add(incomplete);
+                        if (flowIncompleteFound != null && flowIncompleteCleanup.contains(flowIncompleteFound)) {
+                            flowIncompleteCleanup.remove(flowIncompleteFound);
                         }
-                    }
-                    if (flowIncompleteFound != null && flowIncompleteCleanup.contains(flowIncompleteFound)) {
-                        flowIncompleteCleanup.remove(flowIncompleteFound);
-                    }
-                    while (!flowIncompleteCleanup.isEmpty()) {
-                        FLOW_INCOMPLETE.remove(flowIncompleteCleanup.get(0));
-                        flowIncompleteCleanup.remove(0);
-                    }
-                    if (flowIncompleteFound != null) {
-                        flowIncompleteFound.update(messageInfo);
-                        if (flowCurrentEntry == flowIncompleteFound) {
-                            flowTable.updateResponse();
+                        while (!flowIncompleteCleanup.isEmpty()) {
+                            FLOW_INCOMPLETE.remove(flowIncompleteCleanup.get(0));
+                            flowIncompleteCleanup.remove(0);
                         }
-                        int row = flow.indexOf(flowIncompleteFound);
-                        //callbacks.printError(String.valueOf(row) + " " + String.valueOf(flow.size()));
-                        if (mode == 0) {
-                            // TODO refresh tableSorter filter trigger to display it
-                            flowTableSorter.sort();
+                        if (flowIncompleteFound != null) {
+                            flowIncompleteFound.update(messageInfo);
+                            if (flowCurrentEntry == flowIncompleteFound) {
+                                flowTable.updateResponse();
+                            }
+                            int row = flow.indexOf(flowIncompleteFound);
+                            //callbacks.printError(String.valueOf(row) + " " + String.valueOf(flow.size()));
+                            if (mode == 0) {
+                                // TODO refresh tableSorter filter trigger to display it
+                                flowTableSorter.sort();
+                            }
+                            //flowTableModel.fireTableDataChanged();
+                            ////callbacks.printError(String.valueOf(flow.size()) + ", " + String.valueOf(row));
+                            //flowTableModel.fireTableRowsInserted(row, row);
+                            //triggerAutoDelete();
+                            //flowTableModel.fireTableRowsUpdated(0, row);
+                            //} else {
+                            flowTableModel.fireTableRowsUpdated(row, row);
+                            //}
+                            FLOW_INCOMPLETE.remove(flowIncompleteFound);
+                            //
+                            //flowTableModel.fireTableDataChanged();
                         }
-                        //flowTableModel.fireTableDataChanged();
-                        ////callbacks.printError(String.valueOf(flow.size()) + ", " + String.valueOf(row));
-                        //flowTableModel.fireTableRowsInserted(row, row);
-                        //triggerAutoDelete();
-                        //flowTableModel.fireTableRowsUpdated(0, row);
-                        //} else {
-                        flowTableModel.fireTableRowsUpdated(row, row);
-                        //}
-                        FLOW_INCOMPLETE.remove(flowIncompleteFound);
-                        //
-                        //flowTableModel.fireTableDataChanged();
+                        // stdout.println("[-] " + String.valueOf(helpers.analyzeRequest(messageInfo.getHttpService(), messageInfo.getRequest()).getUrl()) + " [" + String.valueOf(helpers.analyzeResponse(messageInfo.getResponse()).getStatusCode()) + "]");
+                        // stdout.println("    " + String.valueOf(flowIncomplete.size()) + ", match: " + String.valueOf(flowIncompleteFound != null));
+                        //callbacks.printOutput(String.valueOf(FLOW_INCOMPLETE.size()));
                     }
-                    // stdout.println("[-] " + String.valueOf(helpers.analyzeRequest(messageInfo.getHttpService(), messageInfo.getRequest()).getUrl()) + " [" + String.valueOf(helpers.analyzeResponse(messageInfo.getResponse()).getStatusCode()) + "]");
-                    // stdout.println("    " + String.valueOf(flowIncomplete.size()) + ", match: " + String.valueOf(flowIncompleteFound != null));
-                    // stdout.println(String.valueOf(flowIncomplete.size()));
                 }
             }
         }
@@ -866,13 +874,14 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         //
         // wrap optionsPane
         wrapper.getScrollPane().getViewport().add(optionsPane);
-        dialog.setBounds(100, 100, 526, 380);
+        dialog.setBounds(100, 100, 526, 420);
         dialog.setContentPane(wrapper);
         //
         modalResult = false;
         if (mode == 0 && optionsPane.getMode2().isSelected()) {
             optionsPane.getMode1().setSelected(true);
         }
+        optionsPane.getAutoPopulate().setSelected(autoPopulate);
         optionsPane.getAutoDelete().setSelected(autoDelete);
         optionsPane.getAutoDeleteKeep().setText(String.valueOf(autoDeleteKeep));
         //
@@ -883,6 +892,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             public void actionPerformed(ActionEvent e) {
                 modalResult = true;
                 modalMode = optionsPane.getMode2().isSelected() ? 1 : 0;
+                modalAutoPopulate = optionsPane.getAutoPopulate().isSelected();
                 modalAutoDelete = optionsPane.getAutoDelete().isSelected();
                 modalAutoDeleteKeep = validateAutoDeleteKeep(optionsPane.getAutoDeleteKeep().getText());
                 dialog.dispose();
@@ -1458,13 +1468,13 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
 
         @Override
         public int getColumnCount() {
-            return 12;
+            return 13;
         }
 
         @Override
         public boolean isCellEditable(int rowIndex, int columnIndex) {
             switch (columnIndex) {
-                case 11:
+                case 12:
                     return true;
                 default:
                     return false;
@@ -1484,19 +1494,21 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 //        return "Method";
                 //case 4:
                 //        return "URL";
-                case 5:
-                    return Boolean.class; // "Params"
+                //case 5:
+                //        return "Reflect";
                 case 6:
-                    return Integer.class; // "Count"
+                    return Boolean.class; // "Params"
                 case 7:
-                    return Integer.class; // "Status"
+                    return Integer.class; // "Count"
                 case 8:
+                    return Integer.class; // "Status"
+                case 9:
                     return Integer.class; // "Length"
-                //case 9:
+                //case 10:
                 //        return "MIME";
-                case 10:
+                case 11:
                     return Date.class; // "Date"
-                //case 11:
+                //case 12:
                 //        return "Comment";
                 default:
                     return String.class;
@@ -1514,7 +1526,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 case 3:
                     return 55;
                 case 4:
-                    return 230;
+                    return 430;
                 case 5:
                     return 55;
                 case 6:
@@ -1526,8 +1538,10 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 case 9:
                     return 55;
                 case 10:
-                    return 130;
+                    return 55;
                 case 11:
+                    return 130;
+                case 12:
                     return 160;
                 default:
                     return 20;
@@ -1549,18 +1563,20 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 case 4:
                     return "URL";
                 case 5:
-                    return "Params";
+                    return "Reflect";
                 case 6:
-                    return "Count";
+                    return "Params";
                 case 7:
-                    return "Status";
+                    return "Count";
                 case 8:
-                    return "Length";
+                    return "Status";
                 case 9:
-                    return "MIME";
+                    return "Length";
                 case 10:
-                    return "Time";
+                    return "MIME";
                 case 11:
+                    return "Time";
+                case 12:
                     return "Comment";
                 default:
                     return "";
@@ -1576,32 +1592,34 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 case 1:
                     return callbacks.getToolName(flowEntry.toolFlag);
                 case 2:
-                    return flowEntry.url.getProtocol() + "://" + flowEntry.url.getHost();
+                    return new StringBuilder(flowEntry.url.getProtocol()).append("://").append(flowEntry.url.getHost()).toString();
                 case 3:
                     return flowEntry.method;
                 case 4:
-                    return flowEntry.url.getPath(); // .toString();
+                    return flowEntry.getQueryPath(); //url.getPath();
                 case 5:
-                    return flowEntry.hasParams;
+                    return new String(new char[flowEntry.getReflections().size()]).replace("\0", "|");
                 case 6:
-                    return flowEntry.paramCount;
+                    return flowEntry.hasParams;
                 case 7:
+                    return flowEntry.paramCount;
+                case 8:
                     if (flowEntry.status != -1) {
                         return flowEntry.status;
                     } else {
                         return "";
                     }
-                case 8:
+                case 9:
                     if (flowEntry.length != -1) {
                         return flowEntry.length;
                     } else {
                         return "";
                     }
-                case 9:
-                    return flowEntry.mime;
                 case 10:
-                    return new SimpleDateFormat("HH:mm:ss d MMM yyyy").format(flowEntry.date);
+                    return flowEntry.mime;
                 case 11:
+                    return new SimpleDateFormat("HH:mm:ss d MMM yyyy").format(flowEntry.date);
+                case 12:
                     return flowEntry.comment;
                 default:
                     return "";
@@ -1658,6 +1676,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         private String mime;
         private final Date date;
         private String comment;
+        private final String queryPath;
+        private final ArrayList<IParameter> reflections;
 
         //public String serialize() {
         //    return "";
@@ -1681,6 +1701,15 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             status = responseInfo.getStatusCode();
             length = messageInfoPersisted.getResponse().length - responseInfo.getBodyOffset();
             mime = responseInfo.getStatedMimeType();
+            
+            IRequestInfo requestInfo = helpers.analyzeRequest(messageInfoPersisted);
+            String responseBody = helpers.bytesToString(response).substring(responseInfo.getBodyOffset());
+            for (IParameter requestParam: requestInfo.getParameters()) {
+                String value = requestParam.getValue();
+                if (value.length() > 3 && responseBody.contains(value)) {
+                    reflections.add(requestParam);
+                }
+            }
         }
 
         FlowEntry(int toolFlag, IHttpRequestResponse messageInfo) {
@@ -1693,6 +1722,15 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             requestInfo = helpers.analyzeRequest(messageInfo);
             method = requestInfo.getMethod();
             url = requestInfo.getUrl();
+            reflections = new ArrayList<>();
+            {
+                StringBuilder pathBuilder = new StringBuilder(url.getPath());
+                String query = url.getQuery();
+                if (query != null) {
+                    pathBuilder.append("?").append(query);
+                }
+                queryPath = pathBuilder.toString();
+            }
             byte[] response = messageInfo.getResponse();
             if (response == null) {
                 incomplete = helpers.bytesToString(messageInfo.getRequest());
@@ -1723,6 +1761,20 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         public boolean isIncomplete() {
             return incomplete != null;
         }
+
+        /**
+         * Returns URL's path along with query string (if present)
+         *
+         * @return
+         */
+        public String getQueryPath() {
+            return queryPath;
+        }
+
+        public ArrayList<IParameter> getReflections() {
+            return reflections;
+        }
+        
     }
 
     //
@@ -1914,7 +1966,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 }
             });
             add(delete);*/
-            /*JMenuItem temp = new JMenuItem("temp");
+ /*JMenuItem temp = new JMenuItem("temp");
             temp.addActionListener(new ActionListener() {
 
                 @Override
@@ -1989,10 +2041,21 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
 
             c.setBackground(cellBackground(table.getRowCount() - row, isSelected));
 
+            final ArrayList<String> reflections = new ArrayList<>();
+            for (IParameter reflection: entry.getReflections()) {
+                reflections.add(new StringBuilder(" &nbsp; &nbsp;").append(reflection.getName()).append("=").append(reflection.getValue()).toString());
+            }
+            if (reflections.size() > 0) {
+                ((JLabel)c ).setToolTipText(new StringBuilder("<html>Reflections:<br/>").append(String.join("<br/>", reflections)).append("</html>").toString());
+            } else {
+                ((JLabel)c ).setToolTipText(null);
+            }
+            
             return c;
         }
     }
 
+    
     //
     // SeparateView
     //
