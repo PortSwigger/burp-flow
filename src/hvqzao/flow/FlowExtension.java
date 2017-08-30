@@ -63,13 +63,14 @@ import burp.IResponseInfo;
 import burp.IScopeChangeListener;
 import burp.ITab;
 import java.awt.Dialog;
+import java.io.PrintWriter;
 import javax.swing.JMenu;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
 
 public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScopeChangeListener, IExtensionStateListener {
 
-    private final String version = "Flow v1.10 (2017-03-10)";
+    private final String version = "Flow v1.13 (2017-08-29)";
     //private final String versionFull = "<html>" + version + ", <a href=\"https://github.com/hvqzao/burp-flow\">https://github.com/hvqzao/burp-flow</a>, MIT license</html>";
     private static IBurpExtenderCallbacks callbacks;
     private static IExtensionHelpers helpers;
@@ -154,18 +155,17 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     private JScrollPane flowTableScroll;
     private boolean autoDelete = false;
     private int autoDeleteKeep = 1000;
-    private boolean autoPopulate = true;
+    private boolean autoPopulate = false;
     private boolean modalAutoPopulate;
     private boolean modalAutoDelete;
     private int modalAutoDeleteKeep;
+    private PrintWriter stderr;
 
     @Override
     public void registerExtenderCallbacks(final IBurpExtenderCallbacks callbacks) {
-
-        // keep a reference to our callbacks object
         FlowExtension.callbacks = callbacks;
-        // obtain an extension helpers object
         helpers = callbacks.getHelpers();
+        stderr = new PrintWriter(callbacks.getStderr(), true);
         // set extension name
         callbacks.setExtensionName("Flow");
         // detect burp
@@ -652,7 +652,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                             }
                             if (autoPopulate != modalAutoPopulate) {
                                 autoPopulate = modalAutoPopulate;
-                                callbacks.saveExtensionSetting("autoPopulate", autoPopulate ? "1" : "0");
+                                callbacks.saveExtensionSetting("autoPopulateProxy", autoPopulate ? "1" : "0");
                             }
                             if (autoDeleteKeep != modalAutoDeleteKeep) {
                                 autoDeleteKeep = modalAutoDeleteKeep;
@@ -681,7 +681,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                     mode = 1;
                 }
                 //
-                autoPopulate = "0".equals(callbacks.loadExtensionSetting("autoPopulate")) == false; // will default to true if not set
+                //autoPopulate = "0".equals(callbacks.loadExtensionSetting("autoPopulate")) == false; // will default to true if not set
+                autoPopulate = "1".equals(callbacks.loadExtensionSetting("autoPopulateProxy"));
                 autoDeleteKeep = validateAutoDeleteKeep(callbacks.loadExtensionSetting("autoDeleteKeep"));
                 autoDelete = "1".equals(callbacks.loadExtensionSetting("autoDelete"));
                 //
@@ -857,10 +858,60 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         return output;
     }
 
+    private boolean showAddNewIssueDialog() {
+        final JDialog dialog = new JDialog(burpFrame, "Add New Sitemap Issue", Dialog.ModalityType.DOCUMENT_MODAL);
+        DialogWrapper wrapper = new DialogWrapper();
+        final FlowAddNewIssue addNewIssue = new FlowAddNewIssue(callbacks);
+        // customize options pane
+        JButton help = addNewIssue.getHelpButton();
+        help.setIcon(iconHelp);
+        help.setEnabled(false);
+        callbacks.customizeUiComponent(help);
+        //
+        // wrap optionsPane
+        wrapper.getScrollPane().getViewport().add(addNewIssue);
+        dialog.setBounds(100, 100, 526, 670);
+        dialog.setContentPane(wrapper);
+        //
+        modalResult = false;
+        // presets here
+        JButton ok = wrapper.getOkButton();
+        callbacks.customizeUiComponent(ok);
+        ok.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                modalResult = true;
+                // FUTURE: multiple entries with same IHttpService?
+                //int[] rows = flowTable.getSelectedRows();
+                //for (int i = 0; i < rows.length; i++) {
+                //    rows[i] = flowTable.convertRowIndexToModel(rows[i]);
+                //}
+                //FlowEntry[] selected = new FlowEntry[rows.length];
+                //for (int i=0 ; i < rows.length ; i++) {
+                //    selected[i] = flow.get(rows[i]);
+                //}
+                callbacks.addScanIssue(addNewIssue.getIssue(popupPointedFlowEntry));
+                dialog.dispose();
+            }
+        });
+        JButton cancel = wrapper.getCancelButton();
+        callbacks.customizeUiComponent(cancel);
+        cancel.addActionListener(new ActionListener() {
+            @Override
+            public void actionPerformed(ActionEvent e) {
+                dialog.dispose();
+            }
+        });
+        dialog.setLocationRelativeTo(flowComponent);
+        dialog.setVisible(true);
+        //
+        return modalResult;
+    }
+
     private boolean showOptionsDialog() {
         final JDialog dialog = new JDialog(burpFrame, "Flow Extension Options", Dialog.ModalityType.DOCUMENT_MODAL);
         DialogWrapper wrapper = new DialogWrapper();
-        final FlowFilterOptions optionsPane = new FlowFilterOptions(callbacks);
+        final FlowFilterPane optionsPane = new FlowFilterPane(callbacks);
         // customize options pane
         JButton modeHelp = optionsPane.getModeHelp();
         modeHelp.setIcon(iconHelp);
@@ -1585,44 +1636,49 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
 
         @Override
         public Object getValueAt(int rowIndex, int columnIndex) {
-            FlowEntry flowEntry = flow.get(rowIndex);
-            switch (columnIndex) {
-                case 0:
-                    return flowEntry.id; // rowIndex + 1;
-                case 1:
-                    return callbacks.getToolName(flowEntry.toolFlag);
-                case 2:
-                    return new StringBuilder(flowEntry.url.getProtocol()).append("://").append(flowEntry.url.getHost()).toString();
-                case 3:
-                    return flowEntry.method;
-                case 4:
-                    return flowEntry.getQueryPath(); //url.getPath();
-                case 5:
-                    return new String(new char[flowEntry.getReflections().size()]).replace("\0", "|");
-                case 6:
-                    return flowEntry.hasParams;
-                case 7:
-                    return flowEntry.paramCount;
-                case 8:
-                    if (flowEntry.status != -1) {
-                        return flowEntry.status;
-                    } else {
+            try {
+                FlowEntry flowEntry = flow.get(rowIndex);
+                switch (columnIndex) {
+                    case 0:
+                        return flowEntry.id; // rowIndex + 1;
+                    case 1:
+                        return callbacks.getToolName(flowEntry.toolFlag);
+                    case 2:
+                        return new StringBuilder(flowEntry.url.getProtocol()).append("://").append(flowEntry.url.getHost()).toString();
+                    case 3:
+                        return flowEntry.method;
+                    case 4:
+                        return flowEntry.getQueryPath(); //url.getPath();
+                    case 5:
+                        return new String(new char[flowEntry.getReflections().size()]).replace("\0", "|");
+                    case 6:
+                        return flowEntry.hasParams;
+                    case 7:
+                        return flowEntry.paramCount;
+                    case 8:
+                        if (flowEntry.status != -1) {
+                            return flowEntry.status;
+                        } else {
+                            return "";
+                        }
+                    case 9:
+                        if (flowEntry.length != -1) {
+                            return flowEntry.length;
+                        } else {
+                            return "";
+                        }
+                    case 10:
+                        return flowEntry.mime;
+                    case 11:
+                        return flowEntry.date; //new SimpleDateFormat("HH:mm:ss d MMM yyyy").format(flowEntry.date);
+                    case 12:
+                        return flowEntry.comment;
+                    default:
                         return "";
-                    }
-                case 9:
-                    if (flowEntry.length != -1) {
-                        return flowEntry.length;
-                    } else {
-                        return "";
-                    }
-                case 10:
-                    return flowEntry.mime;
-                case 11:
-                    return new SimpleDateFormat("HH:mm:ss d MMM yyyy").format(flowEntry.date);
-                case 12:
-                    return flowEntry.comment;
-                default:
-                    return "";
+                }
+            } catch (Exception ex) {
+                ex.printStackTrace(stderr);
+                return null;
             }
         }
 
@@ -1659,7 +1715,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     //
     // FlowEntry class
     //
-    private static final class FlowEntry {
+    public static final class FlowEntry {
 
         private static int newID = 1;
         private final int id;
@@ -1678,6 +1734,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         private String comment;
         private final String queryPath;
         private final ArrayList<IParameter> reflections;
+        private final IHttpService service;
 
         //public String serialize() {
         //    return "";
@@ -1701,13 +1758,18 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             status = responseInfo.getStatusCode();
             length = messageInfoPersisted.getResponse().length - responseInfo.getBodyOffset();
             mime = responseInfo.getStatedMimeType();
-            
+
             IRequestInfo requestInfo = helpers.analyzeRequest(messageInfoPersisted);
             String responseBody = helpers.bytesToString(response).substring(responseInfo.getBodyOffset());
-            for (IParameter requestParam: requestInfo.getParameters()) {
-                String value = requestParam.getValue();
-                if (value.length() > 3 && responseBody.contains(value)) {
-                    reflections.add(requestParam);
+            for (IParameter requestParam : requestInfo.getParameters()) {
+                // exclude cookies
+                if (requestParam.getType() != IParameter.PARAM_COOKIE) {
+                    // parameter value has at least 3 chars
+                    String value = requestParam.getValue();
+                    // reflected in response?
+                    if (value.length() > 3 && responseBody.contains(value)) {
+                        reflections.add(requestParam);
+                    }
                 }
             }
         }
@@ -1722,6 +1784,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             requestInfo = helpers.analyzeRequest(messageInfo);
             method = requestInfo.getMethod();
             url = requestInfo.getUrl();
+            service = messageInfo.getHttpService();
             reflections = new ArrayList<>();
             {
                 StringBuilder pathBuilder = new StringBuilder(url.getPath());
@@ -1774,7 +1837,18 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         public ArrayList<IParameter> getReflections() {
             return reflections;
         }
-        
+
+        public URL getUrl() {
+            return url;
+        }
+
+        public IHttpRequestResponse getMessageInfo() {
+            return (IHttpRequestResponse) messageInfoPersisted;
+        }
+
+        public IHttpService getService() {
+            return service;
+        }
     }
 
     //
@@ -1802,7 +1876,6 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     //
     // Table (JTable) class to handle cell selection
     //
-    @SuppressWarnings("serial")
     private class FlowTable extends JTable {
 
         public FlowTable(TableModel tableModel) {
@@ -1857,7 +1930,6 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         }
     }
 
-    @SuppressWarnings("serial")
     class FlowTablePopup extends JPopupMenu {
 
         private final JMenuItem header;
@@ -1921,7 +1993,6 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 }
             });
             add(sendToRepeater);
-            add(new Separator());
             JMenu history = new JMenu("History");
             add(history);
 
@@ -1954,6 +2025,17 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             history.add(clearAll);
 
             add(new Separator());
+            JMenuItem addNewIssue = new JMenuItem("Add new sitemap issue");
+            addNewIssue.setEnabled(burpFree == false);
+            addNewIssue.addActionListener(new ActionListener() {
+
+                @Override
+                public void actionPerformed(ActionEvent e) {
+                    showAddNewIssueDialog();
+                }
+
+            });
+            add(addNewIssue);
             /*JMenuItem delete = new JMenuItem("Delete");
             delete.addActionListener(new ActionListener() {
 
@@ -2002,8 +2084,45 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         }
     }
 
-    @SuppressWarnings("serial")
+    private String paramType(byte type) {
+        String result;
+        switch (type) {
+            case IParameter.PARAM_BODY:
+                result = "BODY";
+                break;
+            case IParameter.PARAM_COOKIE:
+                result = "COOKIE";
+                break;
+            case IParameter.PARAM_JSON:
+                result = "JSON";
+                break;
+            case IParameter.PARAM_MULTIPART_ATTR:
+                result = "MULTIPART_ATTR";
+                break;
+            case IParameter.PARAM_URL:
+                result = "URL";
+                break;
+            case IParameter.PARAM_XML:
+                result = "XML";
+                break;
+            case IParameter.PARAM_XML_ATTR:
+                result = "XML_ATTR";
+                break;
+            default:
+                result = Byte.toString(type);
+        }
+        return result;
+    }
+    
     class FlowTableCellRenderer extends DefaultTableCellRenderer {
+
+        @Override
+        protected void setValue(Object value) {
+            if (value instanceof Date) {
+                value = new SimpleDateFormat("HH:mm:ss d MMM yyyy").format(value);
+            }
+            super.setValue(value);
+        }
 
         @Override
         public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
@@ -2042,20 +2161,20 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             c.setBackground(cellBackground(table.getRowCount() - row, isSelected));
 
             final ArrayList<String> reflections = new ArrayList<>();
-            for (IParameter reflection: entry.getReflections()) {
-                reflections.add(new StringBuilder(" &nbsp; &nbsp;").append(reflection.getName()).append("=").append(reflection.getValue()).toString());
+            for (IParameter reflection : entry.getReflections()) {
+                reflections.add(new StringBuilder(" &nbsp; &nbsp; (").append(paramType(reflection.getType())).append(") ").append(reflection.getName()).append("=").append(reflection.getValue()).toString());
             }
             if (reflections.size() > 0) {
-                ((JLabel)c ).setToolTipText(new StringBuilder("<html>Reflections:<br/>").append(String.join("<br/>", reflections)).append("</html>").toString());
+                ((JLabel) c).setToolTipText(new StringBuilder("<html>Reflections:<br/>").append(String.join("<br/>", reflections)).append("</html>").toString());
             } else {
-                ((JLabel)c ).setToolTipText(null);
+                ((JLabel) c).setToolTipText(null);
             }
-            
+
             return c;
         }
+
     }
 
-    
     //
     // SeparateView
     //
