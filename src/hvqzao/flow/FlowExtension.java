@@ -1,12 +1,11 @@
 // Flow Burp Extension, (c) 2015-2017 Marcin Woloszyn (@hvqzao), Released under MIT license
 package hvqzao.flow;
 
+import hvqzao.flow.ui.DialogWrapper;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Dimension;
-import java.awt.GridBagLayout;
-import java.awt.Insets;
 import java.awt.Point;
 import java.awt.Toolkit;
 import java.awt.datatransfer.Clipboard;
@@ -43,7 +42,6 @@ import javax.swing.ScrollPaneConstants;
 import javax.swing.SwingUtilities;
 import javax.swing.table.AbstractTableModel;
 import javax.swing.table.DefaultTableCellRenderer;
-import javax.swing.table.TableCellRenderer;
 import javax.swing.table.TableColumn;
 import javax.swing.table.TableModel;
 import javax.swing.table.TableRowSorter;
@@ -62,17 +60,27 @@ import burp.IRequestInfo;
 import burp.IResponseInfo;
 import burp.IScopeChangeListener;
 import burp.ITab;
+import hvqzao.flow.ui.BooleanTableCellRenderer;
+import static hvqzao.flow.ui.Helper.cellBackground;
 import java.awt.Dialog;
 import java.io.PrintWriter;
 import java.util.List;
 import javax.swing.JMenu;
+import javax.swing.RowSorter;
+import javax.swing.SortOrder;
 import javax.swing.SwingWorker;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
+import javax.swing.event.RowSorterEvent;
+import javax.swing.event.RowSorterListener;
 
 public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScopeChangeListener, IExtensionStateListener {
 
-    private final String version = "Flow v1.15 (2017-09-07)";
+    private final String version = "Flow v1.22 (2017-11-16)";
+    // Changes in v1.22:
+    // - "Add new sitemap issue" now supports request & response highlight marks
+    // - Updated coloring theme
+    //
     //private final String versionFull = "<html>" + version + ", <a href=\"https://github.com/hvqzao/burp-flow\">https://github.com/hvqzao/burp-flow</a>, MIT license</html>";
     private static IBurpExtenderCallbacks callbacks;
     private static IExtensionHelpers helpers;
@@ -94,6 +102,11 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     private JTextField flowFilterSearchField;
     private JCheckBox flowFilterSearchCaseSensitive;
     private JCheckBox flowFilterSearchNegative;
+    private JCheckBox flowFilterSearchRegex;
+    private JCheckBox flowFilterSearchRequest;
+    private JCheckBox flowFilterSearchResponse;
+    private JCheckBox flowFilterSourceTarget;
+    private JCheckBox flowFilterSourceTargetOnly;
     private JCheckBox flowFilterSourceProxy;
     private JCheckBox flowFilterSourceProxyOnly;
     private JCheckBox flowFilterSourceSpider;
@@ -113,12 +126,15 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     private JFrame burpFrame;
     private boolean burpFree;
     // private boolean flowFilterHelpExtPopupReady;
+    private boolean flowFilterSourceTargetOnlyOrig;
     private boolean flowFilterSourceProxyOnlyOrig;
     private boolean flowFilterSourceSpiderOnlyOrig;
     private boolean flowFilterSourceScannerOnlyOrig;
     private boolean flowFilterSourceRepeaterOnlyOrig;
     private boolean flowFilterSourceIntruderOnlyOrig;
     private boolean flowFilterSourceExtenderOnlyOrig;
+    private JCheckBox flowFilterCaptureSourceTarget;
+    private JCheckBox flowFilterCaptureSourceTargetOnly;
     private JCheckBox flowFilterCaptureSourceProxy;
     private JCheckBox flowFilterCaptureSourceProxyOnly;
     private JCheckBox flowFilterCaptureSourceSpider;
@@ -131,6 +147,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     private JCheckBox flowFilterCaptureSourceIntruderOnly;
     private JCheckBox flowFilterCaptureSourceExtender;
     private JCheckBox flowFilterCaptureSourceExtenderOnly;
+    private boolean flowFilterCaptureSourceTargetOnlyOrig;
     private boolean flowFilterCaptureSourceProxyOnlyOrig;
     private boolean flowFilterCaptureSourceSpiderOnlyOrig;
     private boolean flowFilterCaptureSourceScannerOnlyOrig;
@@ -145,11 +162,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     // version };
     // private int adIndex = 0;
     // private JLabel flowFilterAd;
-    private SeparateView separateView;
+    private SeparateViewDialog separateView;
     private JButton flowFilterHelpExt;
-    private static final Color COLOR_HIGHLIGHT = new Color(255, 206, 130);
-    private static final Color COLOR_DARKGRAY = new Color(240, 240, 240);
-    private static final Color COLOR_LIGHTGRAY = new Color(250, 250, 250);
     private ImageIcon iconHelp;
     private boolean modalResult;
     private int modalMode;
@@ -161,18 +175,22 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     private boolean modalAutoPopulate;
     private boolean modalAutoDelete;
     private int modalAutoDeleteKeep;
-    private PrintWriter stderr;
+    private static PrintWriter stderr;
     private FilterWorker flowFilterWorker;
+    private static int sortOrder;
+    private String flowFilterText = "";
+    private static FlowExtension instance;
 
     @Override
     public void registerExtenderCallbacks(final IBurpExtenderCallbacks callbacks) {
+        instance = this;
         FlowExtension.callbacks = callbacks;
         helpers = callbacks.getHelpers();
         stderr = new PrintWriter(callbacks.getStderr(), true);
         // set extension name
         callbacks.setExtensionName("Flow");
         // detect burp
-        burpFree = String.valueOf(callbacks.getBurpVersion()[0]).equals("Burp Suite Free Edition");
+        burpFree = String.valueOf(callbacks.getBurpVersion()[0]).equals("Burp Suite Free Edition") || String.valueOf(callbacks.getBurpVersion()[0]).equals("Burp Suite Community Edition");
         // draw UI
         SwingUtilities.invokeLater(new Runnable() {
 
@@ -207,7 +225,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                     @Override
                     public void actionPerformed(ActionEvent e) {
 
-                        if (!flowFilterSourceProxyOnly.isSelected() && !flowFilterSourceSpiderOnly.isSelected() && !flowFilterSourceScannerOnly.isSelected() && !flowFilterSourceRepeaterOnly.isSelected() && !flowFilterSourceIntruderOnly.isSelected() && !flowFilterSourceExtenderOnly.isSelected()) {
+                        if (!flowFilterSourceTargetOnly.isSelected() && !flowFilterSourceProxyOnly.isSelected() && !flowFilterSourceSpiderOnly.isSelected() && !flowFilterSourceScannerOnly.isSelected() && !flowFilterSourceRepeaterOnly.isSelected() && !flowFilterSourceIntruderOnly.isSelected() && !flowFilterSourceExtenderOnly.isSelected()) {
+                            flowFilterSourceTargetOnlyOrig = flowFilterSourceTarget.isSelected();
                             flowFilterSourceProxyOnlyOrig = flowFilterSourceProxy.isSelected();
                             flowFilterSourceSpiderOnlyOrig = flowFilterSourceSpider.isSelected();
                             flowFilterSourceScannerOnlyOrig = flowFilterSourceScanner.isSelected();
@@ -223,8 +242,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                     @Override
                     public void actionPerformed(ActionEvent e) {
 
-                        if (!flowFilterCaptureSourceProxyOnly.isSelected() && !flowFilterCaptureSourceSpiderOnly.isSelected() && !flowFilterCaptureSourceScannerOnly.isSelected() && !flowFilterCaptureSourceRepeaterOnly.isSelected() && !flowFilterCaptureSourceIntruderOnly.isSelected()
-                                && !flowFilterCaptureSourceExtenderOnly.isSelected()) {
+                        if (!flowFilterCaptureSourceTargetOnly.isSelected() && !flowFilterCaptureSourceProxyOnly.isSelected() && !flowFilterCaptureSourceSpiderOnly.isSelected() && !flowFilterCaptureSourceScannerOnly.isSelected() && !flowFilterCaptureSourceRepeaterOnly.isSelected() && !flowFilterCaptureSourceIntruderOnly.isSelected() && !flowFilterCaptureSourceExtenderOnly.isSelected()) {
+                            flowFilterCaptureSourceTargetOnlyOrig = flowFilterCaptureSourceTarget.isSelected();
                             flowFilterCaptureSourceProxyOnlyOrig = flowFilterCaptureSourceProxy.isSelected();
                             flowFilterCaptureSourceSpiderOnlyOrig = flowFilterCaptureSourceSpider.isSelected();
                             flowFilterCaptureSourceScannerOnlyOrig = flowFilterCaptureSourceScanner.isSelected();
@@ -232,33 +251,40 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                             flowFilterCaptureSourceIntruderOnlyOrig = flowFilterCaptureSourceIntruder.isSelected();
                             flowFilterCaptureSourceExtenderOnlyOrig = flowFilterCaptureSourceExtender.isSelected();
                         }
-                        flowFilterUpdateDescription();
+                        flowFilterUpdateDescription(true);
                     }
                 };
                 // layout
                 final JDialog flowFilterPopupWindow = new JDialog();
                 FlowFilterPopup flowFilterPopup = new FlowFilterPopup();
-                flowFilterCaptureSourceExtender = flowFilterPopup.getFlowFilterCaptureSourceExtender();
-                flowFilterCaptureSourceExtenderOnly = flowFilterPopup.getFlowFilterCaptureSourceExtenderOnly();
-                flowFilterCaptureSourceIntruder = flowFilterPopup.getFlowFilterCaptureSourceIntruder();
-                flowFilterCaptureSourceIntruderOnly = flowFilterPopup.getFlowFilterCaptureSourceIntruderOnly();
+                flowFilterCaptureSourceTarget = flowFilterPopup.getFlowFilterCaptureSourceTarget();
+                flowFilterCaptureSourceTargetOnly = flowFilterPopup.getFlowFilterCaptureSourceTargetOnly();
                 flowFilterCaptureSourceProxy = flowFilterPopup.getFlowFilterCaptureSourceProxy();
                 flowFilterCaptureSourceProxyOnly = flowFilterPopup.getFlowFilterCaptureSourceProxyOnly();
-                flowFilterCaptureSourceRepeater = flowFilterPopup.getFlowFilterCaptureSourceRepeater();
-                flowFilterCaptureSourceRepeaterOnly = flowFilterPopup.getFlowFilterCaptureSourceRepeaterOnly();
-                flowFilterCaptureSourceScanner = flowFilterPopup.getFlowFilterCaptureSourceScanner();
-                flowFilterCaptureSourceScannerOnly = flowFilterPopup.getFlowFilterCaptureSourceScannerOnly();
                 flowFilterCaptureSourceSpider = flowFilterPopup.getFlowFilterCaptureSourceSpider();
                 flowFilterCaptureSourceSpiderOnly = flowFilterPopup.getFlowFilterCaptureSourceSpiderOnly();
+                flowFilterCaptureSourceScanner = flowFilterPopup.getFlowFilterCaptureSourceScanner();
+                flowFilterCaptureSourceScannerOnly = flowFilterPopup.getFlowFilterCaptureSourceScannerOnly();
+                flowFilterCaptureSourceRepeater = flowFilterPopup.getFlowFilterCaptureSourceRepeater();
+                flowFilterCaptureSourceRepeaterOnly = flowFilterPopup.getFlowFilterCaptureSourceRepeaterOnly();
+                flowFilterCaptureSourceIntruder = flowFilterPopup.getFlowFilterCaptureSourceIntruder();
+                flowFilterCaptureSourceIntruderOnly = flowFilterPopup.getFlowFilterCaptureSourceIntruderOnly();
+                flowFilterCaptureSourceExtender = flowFilterPopup.getFlowFilterCaptureSourceExtender();
+                flowFilterCaptureSourceExtenderOnly = flowFilterPopup.getFlowFilterCaptureSourceExtenderOnly();
                 flowFilterInscope = flowFilterPopup.getFlowFilterInscope();
                 flowFilterParametrized = flowFilterPopup.getFlowFilterParametrized();
                 flowFilterSearchCaseSensitive = flowFilterPopup.getFlowFilterSearchCaseSensitive();
                 flowFilterSearchField = flowFilterPopup.getFlowFilterSearchField();
                 flowFilterSearchNegative = flowFilterPopup.getFlowFilterSearchNegative();
+                flowFilterSearchRegex = flowFilterPopup.getFlowFilterSearchRegex();
+                flowFilterSearchRequest = flowFilterPopup.getFlowFilterSearchRequest();
+                flowFilterSearchResponse = flowFilterPopup.getFlowFilterSearchResponse();
                 flowFilterSourceExtender = flowFilterPopup.getFlowFilterSourceExtender();
                 flowFilterSourceExtenderOnly = flowFilterPopup.getFlowFilterSourceExtenderOnly();
                 flowFilterSourceIntruder = flowFilterPopup.getFlowFilterSourceIntruder();
                 flowFilterSourceIntruderOnly = flowFilterPopup.getFlowFilterSourceIntruderOnly();
+                flowFilterSourceTarget = flowFilterPopup.getFlowFilterSourceTarget();
+                flowFilterSourceTargetOnly = flowFilterPopup.getFlowFilterSourceTargetOnly();
                 flowFilterSourceProxy = flowFilterPopup.getFlowFilterSourceProxy();
                 flowFilterSourceProxyOnly = flowFilterPopup.getFlowFilterSourceProxyOnly();
                 flowFilterSourceRepeater = flowFilterPopup.getFlowFilterSourceRepeater();
@@ -269,6 +295,9 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 flowFilterSourceSpiderOnly = flowFilterPopup.getFlowFilterSourceSpiderOnly();
                 flowFilterBottom = flowFilterPopup.getFlowFilterBottom();
 
+                flowFilterSourceTarget.setSelected(true); // TODO?
+                flowFilterSourceTargetOnlyOrig = true;
+                //flowFilterSourceProxy.setSelected(true); // TODO?
                 flowFilterSourceProxyOnlyOrig = true;
                 flowFilterSourceSpider.setSelected(true);
                 flowFilterSourceSpiderOnlyOrig = true;
@@ -329,13 +358,23 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 flowFilterParametrized.addActionListener(flowFilterScopeUpdateAction);
                 flowFilterSearchCaseSensitive.addActionListener(flowFilterScopeUpdateAction);
                 flowFilterSearchNegative.addActionListener(flowFilterScopeUpdateAction);
+                flowFilterSearchRegex.addActionListener(flowFilterScopeUpdateAction);
+                flowFilterSearchRequest.addActionListener(flowFilterScopeUpdateAction);
+                flowFilterSearchResponse.addActionListener(flowFilterScopeUpdateAction);
 
+                flowFilterSourceTarget.addActionListener(flowFilterScopeUpdateAction);
                 flowFilterSourceProxy.addActionListener(flowFilterScopeUpdateAction);
                 flowFilterSourceSpider.addActionListener(flowFilterScopeUpdateAction);
                 flowFilterSourceScanner.addActionListener(flowFilterScopeUpdateAction);
                 flowFilterSourceRepeater.addActionListener(flowFilterScopeUpdateAction);
                 flowFilterSourceIntruder.addActionListener(flowFilterScopeUpdateAction);
                 flowFilterSourceExtender.addActionListener(flowFilterScopeUpdateAction);
+                flowFilterSourceTargetOnly.addActionListener(new ActionListener() {
+                    @Override
+                    public void actionPerformed(ActionEvent e) {
+                        flowFilterSourceOnly(flowFilterSourceTargetOnly);
+                    }
+                });
                 flowFilterSourceProxyOnly.addActionListener(new ActionListener() {
                     @Override
                     public void actionPerformed(ActionEvent e) {
@@ -373,12 +412,19 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                     }
                 });
 
+                flowFilterCaptureSourceTarget.addActionListener(flowFilterCaptureScopeUpdateAction);
                 flowFilterCaptureSourceProxy.addActionListener(flowFilterCaptureScopeUpdateAction);
                 flowFilterCaptureSourceSpider.addActionListener(flowFilterCaptureScopeUpdateAction);
                 flowFilterCaptureSourceScanner.addActionListener(flowFilterCaptureScopeUpdateAction);
                 flowFilterCaptureSourceRepeater.addActionListener(flowFilterCaptureScopeUpdateAction);
                 flowFilterCaptureSourceIntruder.addActionListener(flowFilterCaptureScopeUpdateAction);
                 flowFilterCaptureSourceExtender.addActionListener(flowFilterCaptureScopeUpdateAction);
+                flowFilterCaptureSourceTargetOnly.addActionListener(new ActionListener() {
+                    @Override
+                    public void actionPerformed(ActionEvent e) {
+                        flowFilterCaptureSourceOnly(flowFilterCaptureSourceTargetOnly);
+                    }
+                });
                 flowFilterCaptureSourceProxyOnly.addActionListener(new ActionListener() {
                     @Override
                     public void actionPerformed(ActionEvent e) {
@@ -539,7 +585,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                             @Override
                             public void run() {
                                 if (separateView == null) {
-                                    separateView = new SeparateView(burpFrame, "Flow");
+                                    separateView = new SeparateViewDialog(burpFrame, "Flow");
                                 }
                             }
                         });
@@ -552,19 +598,38 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 flowTableSorter = new TableRowSorter<>(flowTableModel);
                 flowTable = new FlowTable(flowTableModel);
                 flowTable.setAutoResizeMode(JTable.AUTO_RESIZE_OFF);
-                // flowTable.getTableHeader().setReorderingAllowed(true);
-                // flowTable.setAutoCreateRowSorter(true);
+                //flowTable.setAutoCreateRowSorter(true);
                 flowTable.setRowSorter(flowTableSorter);
                 for (int i = 0; i < flowTableModel.getColumnCount(); i++) {
                     TableColumn column = flowTable.getColumnModel().getColumn(i);
                     column.setMinWidth(20);
                     column.setPreferredWidth(flowTableModel.getPreferredWidth(i));
                 }
+                flowTableSorter.addRowSorterListener(new RowSorterListener() {
+                    @Override
+                    public void sorterChanged(RowSorterEvent e) {
+                        if (e.getType() == RowSorterEvent.Type.SORT_ORDER_CHANGED) {
+                            List<? extends RowSorter.SortKey> keys = flowTableSorter.getSortKeys();
+                            if (keys.isEmpty() == false) {
+                                RowSorter.SortKey key = keys.get(0);
+                                int order = 0;
+                                if (key.getSortOrder() == SortOrder.ASCENDING) {
+                                    order = 1;
+                                }
+                                if (key.getSortOrder() == SortOrder.DESCENDING) {
+                                    order = -1;
+                                }
+                                sortOrder = order;
+                            }
+                        }
+                    }
+                });
                 callbacks.customizeUiComponent(flowTable);
                 flowTableScroll = new JScrollPane(flowTable, ScrollPaneConstants.VERTICAL_SCROLLBAR_AS_NEEDED, ScrollPaneConstants.HORIZONTAL_SCROLLBAR_AS_NEEDED);
                 flowTableScroll.setMinimumSize(new Dimension(40, 40));
                 callbacks.customizeUiComponent(flowTableScroll);
                 flowTable.setDefaultRenderer(Boolean.class, new BooleanTableCellRenderer());
+                flowTable.getTableHeader().setReorderingAllowed(true);
                 // flowTab.setTopComponent(flowTableScroll);
                 flowTablePane.add(flowTableScroll, BorderLayout.CENTER);
                 flowTab.setTopComponent(flowTablePane);
@@ -697,8 +762,13 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                     // both complete and incomplete requests
                     if (mode == 1) {
                         int row = flow.size();
-                        flow.add(new FlowEntry(toolFlag, messageInfo));
-                        flowTableModel.fireTableRowsInserted(row, row);
+                        try {
+                            flow.add(new FlowEntry(toolFlag, messageInfo));
+                            flowTableModel.fireTableRowsInserted(row, row);
+                        } catch (Exception ex) {
+                            // do nothing
+                            //ex.printStackTrace(stderr);
+                        }
                         triggerAutoDelete();
                     }
                     //stdout.println("[+] " + String.valueOf(helpers.analyzeRequest(messageInfo.getHttpService(), messageInfo.getRequest()).getUrl()));
@@ -791,9 +861,13 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     class PopulateWorker extends SwingWorker<Object, FlowEntry> {
 
         private final IHttpRequestResponse[] history;
+        private final PrintWriter stdout;
 
         public PopulateWorker(IHttpRequestResponse[] history) {
             this.history = history;
+            stdout = new PrintWriter(callbacks.getStdout(), true);
+            stdout.print("Populating log with Burp Proxy history, Please wait... ");
+            stdout.flush();
         }
 
         @Override
@@ -825,6 +899,12 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                     ex.printStackTrace(stderr);
                 }
             }
+        }
+
+        @Override
+        protected void done() {
+            flowTable.repaint();
+            stdout.println("done.");
         }
     }
 
@@ -865,7 +945,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     private boolean showAddNewIssueDialog() {
         final JDialog dialog = new JDialog(burpFrame, "Add New Sitemap Issue", Dialog.ModalityType.DOCUMENT_MODAL);
         DialogWrapper wrapper = new DialogWrapper();
-        final FlowAddNewIssue addNewIssue = new FlowAddNewIssue(callbacks);
+        final FlowAddNewIssue addNewIssue = new FlowAddNewIssue(callbacks, popupPointedFlowEntry);
         // customize options pane
         JButton help = addNewIssue.getHelpButton();
         help.setIcon(iconHelp);
@@ -874,7 +954,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         //
         // wrap optionsPane
         wrapper.getScrollPane().getViewport().add(addNewIssue);
-        dialog.setBounds(100, 100, 526, 670);
+        dialog.setBounds(100, 100, 1070, 670);
         dialog.setContentPane(wrapper);
         //
         modalResult = false;
@@ -884,18 +964,20 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         ok.addActionListener(new ActionListener() {
             @Override
             public void actionPerformed(ActionEvent e) {
-                modalResult = true;
-                // FUTURE: multiple entries with same IHttpService?
-                //int[] rows = flowTable.getSelectedRows();
-                //for (int i = 0; i < rows.length; i++) {
-                //    rows[i] = flowTable.convertRowIndexToModel(rows[i]);
-                //}
-                //FlowEntry[] selected = new FlowEntry[rows.length];
-                //for (int i=0 ; i < rows.length ; i++) {
-                //    selected[i] = flow.get(rows[i]);
-                //}
-                callbacks.addScanIssue(addNewIssue.getIssue(popupPointedFlowEntry));
-                dialog.dispose();
+                if (addNewIssue.dataValidation()) {
+                    modalResult = true;
+                    // FUTURE: multiple entries with same IHttpService?
+                    //int[] rows = flowTable.getSelectedRows();
+                    //for (int i = 0; i < rows.length; i++) {
+                    //    rows[i] = flowTable.convertRowIndexToModel(rows[i]);
+                    //}
+                    //FlowEntry[] selected = new FlowEntry[rows.length];
+                    //for (int i=0 ; i < rows.length ; i++) {
+                    //    selected[i] = flow.get(rows[i]);
+                    //}
+                    callbacks.addScanIssue(addNewIssue.getIssue());
+                    dialog.dispose();
+                }
             }
         });
         JButton cancel = wrapper.getCancelButton();
@@ -915,7 +997,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     private boolean showOptionsDialog() {
         final JDialog dialog = new JDialog(burpFrame, "Flow Extension Options", Dialog.ModalityType.DOCUMENT_MODAL);
         DialogWrapper wrapper = new DialogWrapper();
-        final FlowFilterPane optionsPane = new FlowFilterPane(callbacks);
+        final FlowOptionsPane optionsPane = new FlowOptionsPane(callbacks);
         // customize options pane
         JButton modeHelp = optionsPane.getModeHelp();
         modeHelp.setIcon(iconHelp);
@@ -967,20 +1049,12 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         return modalResult;
     }
 
-    static Color cellBackground(int row, boolean isSelected) {
-        if (isSelected) {
-            return COLOR_HIGHLIGHT;
-        } else if (row % 20 == 1) {
-            return COLOR_DARKGRAY; // new Color(225, 225, 225);
-        } else if (row % 2 == 1) {
-            return COLOR_LIGHTGRAY; // new Color(240, 240, 240);
-        } else {
-            return Color.WHITE;
+    private void flowFilterCaptureSourceOnly(JCheckBox which) {
+
+        if (which != flowFilterCaptureSourceTargetOnly && flowFilterCaptureSourceTargetOnly.isSelected()) {
+            flowFilterCaptureSourceTargetOnly.setSelected(false);
+            flowFilterCaptureSourceTarget.setSelected(flowFilterCaptureSourceTargetOnlyOrig);
         }
-    }
-
-    void flowFilterCaptureSourceOnly(JCheckBox which) {
-
         if (which != flowFilterCaptureSourceProxyOnly && flowFilterCaptureSourceProxyOnly.isSelected()) {
             flowFilterCaptureSourceProxyOnly.setSelected(false);
             flowFilterCaptureSourceProxy.setSelected(flowFilterCaptureSourceProxyOnlyOrig);
@@ -1006,6 +1080,9 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             flowFilterCaptureSourceExtender.setSelected(flowFilterCaptureSourceExtenderOnlyOrig);
         }
 
+        if (which == flowFilterCaptureSourceTargetOnly && !flowFilterCaptureSourceTargetOnly.isSelected()) {
+            flowFilterCaptureSourceTarget.setSelected(flowFilterCaptureSourceTargetOnlyOrig);
+        }
         if (which == flowFilterCaptureSourceProxyOnly && !flowFilterCaptureSourceProxyOnly.isSelected()) {
             flowFilterCaptureSourceProxy.setSelected(flowFilterCaptureSourceProxyOnlyOrig);
         }
@@ -1026,6 +1103,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         }
 
         if (which.isSelected()) {
+            flowFilterCaptureSourceTarget.setEnabled(false);
+            flowFilterCaptureSourceTarget.setSelected(which == flowFilterCaptureSourceTargetOnly);
             flowFilterCaptureSourceProxy.setEnabled(false);
             flowFilterCaptureSourceProxy.setSelected(which == flowFilterCaptureSourceProxyOnly);
             flowFilterCaptureSourceSpider.setEnabled(false);
@@ -1039,6 +1118,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             flowFilterCaptureSourceExtender.setEnabled(false);
             flowFilterCaptureSourceExtender.setSelected(which == flowFilterCaptureSourceExtenderOnly);
         } else {
+            flowFilterCaptureSourceTarget.setSelected(flowFilterCaptureSourceTargetOnlyOrig);
+            flowFilterCaptureSourceTarget.setEnabled(true);
             flowFilterCaptureSourceProxy.setSelected(flowFilterCaptureSourceProxyOnlyOrig);
             flowFilterCaptureSourceProxy.setEnabled(true);
             flowFilterCaptureSourceSpider.setSelected(flowFilterCaptureSourceSpiderOnlyOrig);
@@ -1053,11 +1134,15 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             flowFilterCaptureSourceExtender.setEnabled(true);
         }
 
-        flowFilterUpdateDescription();
+        flowFilterUpdateDescription(true);
     }
 
     void flowFilterSourceOnly(JCheckBox which) {
 
+        if (which != flowFilterSourceTargetOnly && flowFilterSourceTargetOnly.isSelected()) {
+            flowFilterSourceTargetOnly.setSelected(false);
+            flowFilterSourceTarget.setSelected(flowFilterSourceTargetOnlyOrig);
+        }
         if (which != flowFilterSourceProxyOnly && flowFilterSourceProxyOnly.isSelected()) {
             flowFilterSourceProxyOnly.setSelected(false);
             flowFilterSourceProxy.setSelected(flowFilterSourceProxyOnlyOrig);
@@ -1083,6 +1168,9 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             flowFilterSourceExtender.setSelected(flowFilterSourceExtenderOnlyOrig);
         }
 
+        if (which == flowFilterSourceTargetOnly && !flowFilterSourceTargetOnly.isSelected()) {
+            flowFilterSourceTarget.setSelected(flowFilterSourceTargetOnlyOrig);
+        }
         if (which == flowFilterSourceProxyOnly && !flowFilterSourceProxyOnly.isSelected()) {
             flowFilterSourceProxy.setSelected(flowFilterSourceProxyOnlyOrig);
         }
@@ -1103,6 +1191,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         }
 
         if (which.isSelected()) {
+            flowFilterSourceTarget.setEnabled(false);
+            flowFilterSourceTarget.setSelected(which == flowFilterSourceTargetOnly);
             flowFilterSourceProxy.setEnabled(false);
             flowFilterSourceProxy.setSelected(which == flowFilterSourceProxyOnly);
             flowFilterSourceSpider.setEnabled(false);
@@ -1116,6 +1206,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             flowFilterSourceExtender.setEnabled(false);
             flowFilterSourceExtender.setSelected(which == flowFilterSourceExtenderOnly);
         } else {
+            flowFilterSourceTarget.setSelected(flowFilterSourceTargetOnlyOrig);
+            flowFilterSourceTarget.setEnabled(true);
             flowFilterSourceProxy.setSelected(flowFilterSourceProxyOnlyOrig);
             flowFilterSourceProxy.setEnabled(true);
             flowFilterSourceSpider.setSelected(flowFilterSourceSpiderOnlyOrig);
@@ -1135,30 +1227,35 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
 
     private boolean toolFlagFilterProcessing(int toolFlag) {
         boolean process = true;
+        boolean targetOnly = flowFilterSourceTargetOnly.isSelected();
         boolean proxyOnly = flowFilterSourceProxyOnly.isSelected();
         boolean spiderOnly = flowFilterSourceSpiderOnly.isSelected();
         boolean scannerOnly = flowFilterSourceScannerOnly.isSelected();
         boolean repeaterOnly = flowFilterSourceRepeaterOnly.isSelected();
         boolean intruderOnly = flowFilterSourceIntruderOnly.isSelected();
         boolean extenderOnly = flowFilterSourceExtenderOnly.isSelected();
-        if (toolFlag == IBurpExtenderCallbacks.TOOL_SPIDER) {
-            if (proxyOnly || scannerOnly || repeaterOnly || intruderOnly || extenderOnly || !flowFilterSourceSpider.isSelected()) {
+        if (toolFlag == IBurpExtenderCallbacks.TOOL_TARGET) {
+            if (proxyOnly || spiderOnly || scannerOnly || repeaterOnly || intruderOnly || extenderOnly || !flowFilterSourceTarget.isSelected()) {
+                process = false;
+            }
+        } else if (toolFlag == IBurpExtenderCallbacks.TOOL_SPIDER) {
+            if (targetOnly || proxyOnly || scannerOnly || repeaterOnly || intruderOnly || extenderOnly || !flowFilterSourceSpider.isSelected()) {
                 process = false;
             }
         } else if (toolFlag == IBurpExtenderCallbacks.TOOL_SCANNER) {
-            if (proxyOnly || spiderOnly || repeaterOnly || intruderOnly || extenderOnly || !flowFilterSourceScanner.isSelected()) {
+            if (targetOnly || proxyOnly || spiderOnly || repeaterOnly || intruderOnly || extenderOnly || !flowFilterSourceScanner.isSelected()) {
                 process = false;
             }
         } else if (toolFlag == IBurpExtenderCallbacks.TOOL_REPEATER) {
-            if (proxyOnly || spiderOnly || scannerOnly || intruderOnly || extenderOnly || !flowFilterSourceRepeater.isSelected()) {
+            if (targetOnly || proxyOnly || spiderOnly || scannerOnly || intruderOnly || extenderOnly || !flowFilterSourceRepeater.isSelected()) {
                 process = false;
             }
         } else if (toolFlag == IBurpExtenderCallbacks.TOOL_INTRUDER) {
-            if (proxyOnly || spiderOnly || scannerOnly || repeaterOnly || extenderOnly || !flowFilterSourceIntruder.isSelected()) {
+            if (targetOnly || proxyOnly || spiderOnly || scannerOnly || repeaterOnly || extenderOnly || !flowFilterSourceIntruder.isSelected()) {
                 process = false;
             }
         } else if (toolFlag == IBurpExtenderCallbacks.TOOL_EXTENDER) {
-            if (proxyOnly || spiderOnly || scannerOnly || repeaterOnly || intruderOnly || !flowFilterSourceExtender.isSelected()) {
+            if (targetOnly || proxyOnly || spiderOnly || scannerOnly || repeaterOnly || intruderOnly || !flowFilterSourceExtender.isSelected()) {
                 process = false;
             }
         } else if (!flowFilterSourceProxy.isSelected()) { // "proxy" processes
@@ -1171,30 +1268,35 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
 
     private boolean toolFlagCaptureProcessing(int toolFlag) {
         boolean process = true;
+        boolean targetOnly = flowFilterCaptureSourceTargetOnly.isSelected();
         boolean proxyOnly = flowFilterCaptureSourceProxyOnly.isSelected();
         boolean spiderOnly = flowFilterCaptureSourceSpiderOnly.isSelected();
         boolean scannerOnly = flowFilterCaptureSourceScannerOnly.isSelected();
         boolean repeaterOnly = flowFilterCaptureSourceRepeaterOnly.isSelected();
         boolean intruderOnly = flowFilterCaptureSourceIntruderOnly.isSelected();
         boolean extenderOnly = flowFilterCaptureSourceExtenderOnly.isSelected();
-        if (toolFlag == IBurpExtenderCallbacks.TOOL_SPIDER) {
-            if (proxyOnly || scannerOnly || repeaterOnly || intruderOnly || extenderOnly || !flowFilterCaptureSourceSpider.isSelected()) {
+        if (toolFlag == IBurpExtenderCallbacks.TOOL_TARGET) {
+            if (proxyOnly || spiderOnly || scannerOnly || repeaterOnly || intruderOnly || extenderOnly || !flowFilterCaptureSourceTarget.isSelected()) {
+                process = false;
+            }
+        } else if (toolFlag == IBurpExtenderCallbacks.TOOL_SPIDER) {
+            if (targetOnly || proxyOnly || scannerOnly || repeaterOnly || intruderOnly || extenderOnly || !flowFilterCaptureSourceSpider.isSelected()) {
                 process = false;
             }
         } else if (toolFlag == IBurpExtenderCallbacks.TOOL_SCANNER) {
-            if (proxyOnly || spiderOnly || repeaterOnly || intruderOnly || extenderOnly || !flowFilterCaptureSourceScanner.isSelected()) {
+            if (targetOnly || proxyOnly || spiderOnly || repeaterOnly || intruderOnly || extenderOnly || !flowFilterCaptureSourceScanner.isSelected()) {
                 process = false;
             }
         } else if (toolFlag == IBurpExtenderCallbacks.TOOL_REPEATER) {
-            if (proxyOnly || spiderOnly || scannerOnly || intruderOnly || extenderOnly || !flowFilterCaptureSourceRepeater.isSelected()) {
+            if (targetOnly || proxyOnly || spiderOnly || scannerOnly || intruderOnly || extenderOnly || !flowFilterCaptureSourceRepeater.isSelected()) {
                 process = false;
             }
         } else if (toolFlag == IBurpExtenderCallbacks.TOOL_INTRUDER) {
-            if (proxyOnly || spiderOnly || scannerOnly || repeaterOnly || extenderOnly || !flowFilterCaptureSourceIntruder.isSelected()) {
+            if (targetOnly || proxyOnly || spiderOnly || scannerOnly || repeaterOnly || extenderOnly || !flowFilterCaptureSourceIntruder.isSelected()) {
                 process = false;
             }
         } else if (toolFlag == IBurpExtenderCallbacks.TOOL_EXTENDER) {
-            if (proxyOnly || spiderOnly || scannerOnly || repeaterOnly || intruderOnly || !flowFilterCaptureSourceExtender.isSelected()) {
+            if (targetOnly || proxyOnly || spiderOnly || scannerOnly || repeaterOnly || intruderOnly || !flowFilterCaptureSourceExtender.isSelected()) {
                 process = false;
             }
         } else if (!flowFilterCaptureSourceProxy.isSelected()) { // "proxy" processes
@@ -1212,7 +1314,14 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         flowFilterSearchField.setText("");
         flowFilterSearchCaseSensitive.setSelected(false);
         flowFilterSearchNegative.setSelected(false);
+        flowFilterSearchRegex.setSelected(false);
+        flowFilterSearchRequest.setSelected(false);
+        flowFilterSearchResponse.setSelected(false);
         // flowFilter
+        flowFilterSourceTarget.setSelected(true);
+        flowFilterSourceTarget.setEnabled(true);
+        flowFilterSourceTargetOnly.setSelected(false);
+        flowFilterSourceTargetOnlyOrig = true;
         flowFilterSourceProxy.setSelected(true);
         flowFilterSourceProxy.setEnabled(true);
         flowFilterSourceProxyOnly.setSelected(false);
@@ -1238,6 +1347,10 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         flowFilterSourceExtenderOnly.setSelected(false);
         flowFilterSourceExtenderOnlyOrig = true;
         // filterFilterCapture
+        flowFilterCaptureSourceTarget.setSelected(true);
+        flowFilterCaptureSourceTarget.setEnabled(true);
+        flowFilterCaptureSourceTargetOnly.setSelected(false);
+        flowFilterCaptureSourceTargetOnlyOrig = true;
         flowFilterCaptureSourceProxy.setSelected(true);
         flowFilterCaptureSourceProxy.setEnabled(true);
         flowFilterCaptureSourceProxyOnly.setSelected(false);
@@ -1267,8 +1380,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         flowFilterUpdate();
     }
 
-    // flow filter update description
-    private void flowFilterUpdateDescription() {
+    // flow filter description update
+    private void flowFilterUpdateDescription(boolean show) {
         StringBuilder filterDescription = new StringBuilder("Filter: ");
         // filter
         boolean filterAll = true;
@@ -1288,6 +1401,35 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 searchAttrib.append("case sensitive");
                 searchHasAttr = true;
             }
+            if (flowFilterSearchRegex.isSelected()) {
+                if (searchHasAttr) {
+                    searchAttrib.append(", ");
+                }
+                searchAttrib.append("regex");
+                searchHasAttr = true;
+            }
+            if (flowFilterSearchRequest.isSelected() && flowFilterSearchResponse.isSelected()) {
+                if (searchHasAttr) {
+                    searchAttrib.append(", ");
+                }
+                searchAttrib.append("in request & response");
+                searchHasAttr = true;
+            } else {
+                if (flowFilterSearchRequest.isSelected()) {
+                    if (searchHasAttr) {
+                        searchAttrib.append(", ");
+                    }
+                    searchAttrib.append("in request");
+                    searchHasAttr = true;
+                }
+                if (flowFilterSearchResponse.isSelected()) {
+                    if (searchHasAttr) {
+                        searchAttrib.append(", ");
+                    }
+                    searchAttrib.append("in response");
+                    searchHasAttr = true;
+                }
+            }
             if (flowFilterSearchNegative.isSelected()) {
                 if (searchHasAttr) {
                     searchAttrib.append(", ");
@@ -1306,7 +1448,9 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         }
         // filter sources
         int filterSources = 0;
-        if (flowFilterSourceProxyOnly.isSelected()) {
+        if (flowFilterSourceTargetOnly.isSelected()) {
+            filterDescription.append("Target only");
+        } else if (flowFilterSourceProxyOnly.isSelected()) {
             filterDescription.append("Proxy only");
         } else if (flowFilterSourceSpiderOnly.isSelected()) {
             filterDescription.append("Spider only");
@@ -1318,9 +1462,13 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             filterDescription.append("Intruder only");
         } else if (flowFilterSourceExtenderOnly.isSelected()) {
             filterDescription.append("Extender only");
-        } else if (flowFilterSourceProxy.isSelected() && flowFilterSourceSpider.isSelected() && (burpFree || flowFilterSourceScanner.isSelected()) && flowFilterSourceRepeater.isSelected() && flowFilterSourceIntruder.isSelected() && flowFilterSourceExtender.isSelected()) {
+        } else if (flowFilterSourceTarget.isSelected() && flowFilterSourceProxy.isSelected() && flowFilterSourceSpider.isSelected() && (burpFree || flowFilterSourceScanner.isSelected()) && flowFilterSourceRepeater.isSelected() && flowFilterSourceIntruder.isSelected() && flowFilterSourceExtender.isSelected()) {
             filterDescription.append("All sources");
         } else {
+            if (flowFilterSourceTarget.isSelected()) {
+                filterDescription.append("T");
+                filterSources += 1;
+            }
             if (flowFilterSourceProxy.isSelected()) {
                 filterDescription.append("P");
                 filterSources += 1;
@@ -1353,7 +1501,9 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         filterDescription.append(", Capture: ");
         // filter sources
         int FilterCaptureSources = 0;
-        if (flowFilterCaptureSourceProxyOnly.isSelected()) {
+        if (flowFilterCaptureSourceTargetOnly.isSelected()) {
+            filterDescription.append("Target only");
+        } else if (flowFilterCaptureSourceProxyOnly.isSelected()) {
             filterDescription.append("Proxy only");
         } else if (flowFilterCaptureSourceSpiderOnly.isSelected()) {
             filterDescription.append("Spider only");
@@ -1365,9 +1515,13 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             filterDescription.append("Intruder only");
         } else if (flowFilterCaptureSourceExtenderOnly.isSelected()) {
             filterDescription.append("Extender only");
-        } else if (flowFilterCaptureSourceProxy.isSelected() && flowFilterCaptureSourceSpider.isSelected() && (burpFree || flowFilterCaptureSourceScanner.isSelected()) && flowFilterCaptureSourceRepeater.isSelected() && flowFilterCaptureSourceIntruder.isSelected() && flowFilterCaptureSourceExtender.isSelected()) {
+        } else if (flowFilterCaptureSourceTarget.isSelected() && flowFilterCaptureSourceProxy.isSelected() && flowFilterCaptureSourceSpider.isSelected() && (burpFree || flowFilterCaptureSourceScanner.isSelected()) && flowFilterCaptureSourceRepeater.isSelected() && flowFilterCaptureSourceIntruder.isSelected() && flowFilterCaptureSourceExtender.isSelected()) {
             filterDescription.append("All sources");
         } else {
+            if (flowFilterCaptureSourceTarget.isSelected()) {
+                filterDescription.append("T");
+                FilterCaptureSources += 1;
+            }
             if (flowFilterCaptureSourceProxy.isSelected()) {
                 filterDescription.append("P");
                 FilterCaptureSources += 1;
@@ -1396,7 +1550,12 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 filterDescription.append("None");
             }
         }
-        flowFilter.setText(filterDescription.toString());
+        flowFilterText = filterDescription.toString();
+        if (show && (flowFilterWorker == null || flowFilterWorker.isDone())) {
+            flowFilter.setText(flowFilterText);
+        } else {
+            flowFilter.setText(flowFilterText + " (Please wait...)");
+        }
     }
 
     // flow filter update
@@ -1404,6 +1563,23 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         final ArrayList<RowFilter<FlowTableModel, Number>> mergedFilter = new ArrayList<>();
         // manual filter
         RowFilter<FlowTableModel, Number> manualFilter;
+        // filter logic
+        final String text = flowFilterSearchField.getText();
+        final Pattern pattern;
+        if (flowFilterSearchRegex.isSelected()) {
+            if (flowFilterSearchCaseSensitive.isSelected()) {
+                pattern = Pattern.compile(text);
+            } else {
+                pattern = Pattern.compile(text, Pattern.CASE_INSENSITIVE);
+            }
+        } else {
+            if (flowFilterSearchCaseSensitive.isSelected()) {
+                pattern = Pattern.compile(Pattern.quote(text));
+            } else {
+                pattern = Pattern.compile(Pattern.quote(text), Pattern.CASE_INSENSITIVE);
+            }
+        }
+        // process
         manualFilter = new RowFilter<FlowTableModel, Number>() {
             @Override
             public boolean include(javax.swing.RowFilter.Entry<? extends FlowTableModel, ? extends Number> entry) {
@@ -1425,7 +1601,6 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 // search
                 if (result && flowFilterSearchField.getText().length() != 0) {
                     boolean found;
-                    String text = flowFilterSearchField.getText();
                     String req = new String(flowEntry.messageInfoPersisted.getRequest());
                     byte[] response = flowEntry.messageInfoPersisted.getResponse();
                     String resp;
@@ -1434,10 +1609,16 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                     } else {
                         resp = "";
                     }
-                    if (flowFilterSearchCaseSensitive.isSelected()) {
-                        found = Pattern.compile(Pattern.quote(text)).matcher(req).find() || Pattern.compile(Pattern.quote(text)).matcher(resp).find();
+                    boolean foundInReq = pattern.matcher(req).find();
+                    boolean foundInResp = pattern.matcher(resp).find();
+                    if (flowFilterSearchRequest.isSelected() && flowFilterSearchResponse.isSelected()) {
+                        found = foundInReq && foundInResp;
+                    } else if (flowFilterSearchRequest.isSelected()) {
+                        found = foundInReq;
+                    } else if (flowFilterSearchResponse.isSelected()) {
+                        found = foundInResp;
                     } else {
-                        found = Pattern.compile(Pattern.quote(text), Pattern.CASE_INSENSITIVE).matcher(req).find() || Pattern.compile(Pattern.quote(text), Pattern.CASE_INSENSITIVE).matcher(resp).find();
+                        found = foundInReq || foundInResp;
                     }
                     if (flowFilterSearchNegative.isSelected()) {
                         if (found) {
@@ -1482,7 +1663,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         //        flowTableSorter.setRowFilter(RowFilter.andFilter(mergedFilter));
         //    }
         //});
-        flowFilterUpdateDescription();
+        flowFilterUpdateDescription(false);
         if (flowFilterWorker != null) {
             try {
                 flowFilterWorker.cancel(true);
@@ -1505,6 +1686,12 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         protected Object doInBackground() throws Exception {
             flowTableSorter.setRowFilter(filter);
             return null;
+        }
+
+        @Override
+        protected void done() {
+            flowFilter.setText(flowFilterText);
+            flowTable.repaint();
         }
     }
 
@@ -1681,17 +1868,9 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                     case 7:
                         return flowEntry.paramCount;
                     case 8:
-                        if (flowEntry.status != -1) {
-                            return flowEntry.status;
-                        } else {
-                            return "";
-                        }
+                        return flowEntry.status;
                     case 9:
-                        if (flowEntry.length != -1) {
-                            return flowEntry.length;
-                        } else {
-                            return "";
-                        }
+                        return flowEntry.length;
                     case 10:
                         return flowEntry.mime;
                     case 11:
@@ -1751,8 +1930,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         private final String method;
         private final URL url;
         private final boolean hasParams;
-        private short paramCount;
-        private Short status;
+        private int paramCount;
+        private int status;
         private int length;
         private String mime;
         private final Date date;
@@ -1998,6 +2177,27 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             add(scopeAdd);
             add(scopeExclude);
             add(new Separator());
+
+            JMenuItem doAnActiveScan = new JMenuItem("Do an active scan");
+            doAnActiveScan.addActionListener(new ActionListener() {
+
+                @Override
+                public void actionPerformed(ActionEvent e) {
+                    IHttpService service = popupPointedFlowEntry.messageInfoPersisted.getHttpService();
+                    callbacks.doActiveScan(service.getHost(), service.getPort(), "https".equals(service.getProtocol()), popupPointedFlowEntry.messageInfoPersisted.getRequest());
+                }
+            });
+            add(doAnActiveScan);
+            JMenuItem doAPassiveScan = new JMenuItem("Do a passive scan");
+            doAPassiveScan.addActionListener(new ActionListener() {
+
+                @Override
+                public void actionPerformed(ActionEvent e) {
+                    IHttpService service = popupPointedFlowEntry.messageInfoPersisted.getHttpService();
+                    callbacks.doPassiveScan(service.getHost(), service.getPort(), "https".equals(service.getProtocol()), popupPointedFlowEntry.messageInfoPersisted.getRequest(), popupPointedFlowEntry.messageInfoPersisted.getResponse());
+                }
+            });
+            add(doAPassiveScan);
             JMenuItem sendToIntruder = new JMenuItem("Send to Intruder");
             sendToIntruder.addActionListener(new ActionListener() {
 
@@ -2056,12 +2256,17 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
 
                 @Override
                 public void actionPerformed(ActionEvent e) {
+                    //int[] rows = flowTable.getSelectedRows();
+                    //for (int i = 0; i < rows.length; i++) {
+                    //    rows[i] = flowTable.convertRowIndexToModel(rows[i]);
+                    //}
                     showAddNewIssueDialog();
                 }
 
             });
             add(addNewIssue);
-            
+            add(new Separator());
+
             //JMenuItem delete = new JMenuItem("Delete");
             //delete.addActionListener(new ActionListener() {
             //
@@ -2148,6 +2353,9 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             if (value instanceof Date) {
                 value = new SimpleDateFormat("HH:mm:ss d MMM yyyy").format(value);
             }
+            if ((value instanceof Integer) && ((Integer) value == -1)) {
+                value = "";
+            }
             super.setValue(value);
         }
 
@@ -2185,7 +2393,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             }
             c.setForeground(new Color(r, g, b));
 
-            c.setBackground(cellBackground(table.getRowCount() - row, isSelected));
+            c.setBackground(cellBackground(table.getRowCount(), row, isSelected));
 
             final ArrayList<String> reflections = new ArrayList<>();
             for (IParameter reflection : entry.getReflections()) {
@@ -2202,10 +2410,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
 
     }
 
-    //
-    // SeparateView
-    //
-    public class SeparateView extends JDialog {
+    public class SeparateViewDialog extends JDialog {
 
         private final Component parent;
         private final String title;
@@ -2227,7 +2432,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             super.dispose();
         }
 
-        public SeparateView(final Component parent, String title) {
+        public SeparateViewDialog(final Component parent, String title) {
             flowFilterHelpExt.setEnabled(false);
             flowComponent.remove(flowTab);
             flowComponent.revalidate();
@@ -2248,31 +2453,15 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         }
     }
 
-    private static class BooleanTableCellRenderer extends JCheckBox implements TableCellRenderer {
+    public static int getSortOrder() {
+        return sortOrder;
+    }
 
-        public BooleanTableCellRenderer() {
-            super();
-            initialize();
-        }
+    public static FlowExtension getInstance() {
+        return instance;
+    }
 
-        private void initialize() {
-            setOpaque(true);
-            putClientProperty("JComponent.sizeVariant", "small");
-            SwingUtilities.updateComponentTreeUI(this);
-            setLayout(new GridBagLayout());
-            setMargin(new Insets(0, 0, 0, 0));
-            setHorizontalAlignment(JLabel.CENTER);
-            setBorderPainted(true);
-        }
-
-        @Override
-        public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
-            //int modelRow = table.convertRowIndexToModel(row);
-            setBackground(cellBackground(table.getRowCount() - row, isSelected));
-            if (value instanceof Boolean) {
-                setSelected((Boolean) value);
-            }
-            return this;
-        }
+    public static PrintWriter getStderr() {
+        return stderr;
     }
 }
