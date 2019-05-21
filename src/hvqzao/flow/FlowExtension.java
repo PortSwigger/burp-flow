@@ -1,4 +1,4 @@
-// Flow Burp Extension, (c) 2015-2017 Marcin Woloszyn (@hvqzao), Released under MIT license
+// Flow Burp Extension, (c) 2015-2019 Marcin Woloszyn (@hvqzao), Released under MIT license
 package hvqzao.flow;
 
 import hvqzao.flow.ui.DialogWrapper;
@@ -61,10 +61,11 @@ import burp.IResponseInfo;
 import burp.IScopeChangeListener;
 import burp.ITab;
 import hvqzao.flow.ui.BooleanTableCellRenderer;
-import static hvqzao.flow.ui.Helper.cellBackground;
+import hvqzao.flow.ui.ThemeHelper;
 import java.awt.Dialog;
 import java.io.PrintWriter;
 import java.util.List;
+import javax.swing.JComponent;
 import javax.swing.JMenu;
 import javax.swing.RowSorter;
 import javax.swing.SortOrder;
@@ -76,10 +77,16 @@ import javax.swing.event.RowSorterListener;
 
 public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScopeChangeListener, IExtensionStateListener {
 
-    private final String version = "Flow v1.22 (2017-11-16)";
-    // Changes in v1.22:
-    // - "Add new sitemap issue" now supports request & response highlight marks
-    // - Updated coloring theme
+    private final String version = "Flow v1.24 (2019-05-20)";
+    // Changes in v1.24:
+    // - rows coloring is now disabled on dark theme
+    // - reflections count display limit introduced
+    //
+    // Changes in v1.23:
+    // - Center "Add new sitemap issue" dialog, resize according to preferred size
+    // - Filter by search term does not break window anymore when search is too long
+    // - Displaying path instead of pathQuery in URL column
+    // - Added out-of-scope filter
     //
     //private final String versionFull = "<html>" + version + ", <a href=\"https://github.com/hvqzao/burp-flow\">https://github.com/hvqzao/burp-flow</a>, MIT license</html>";
     private static IBurpExtenderCallbacks callbacks;
@@ -98,6 +105,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     private boolean flowFilterPopupReady;
     private JLabel flowFilter;
     private JCheckBox flowFilterInscope;
+    private JCheckBox flowFilterOutofscope;
     private JCheckBox flowFilterParametrized;
     private JTextField flowFilterSearchField;
     private JCheckBox flowFilterSearchCaseSensitive;
@@ -172,9 +180,15 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     private boolean autoDelete = false;
     private int autoDeleteKeep = 1000;
     private boolean autoPopulate = false;
+    private boolean showReflections = true;
+    private int showReflectionsCount;
+    private final int showReflectionsCountMax = 50;
+    private final int showReflectionsCountDefault = 10;
     private boolean modalAutoPopulate;
     private boolean modalAutoDelete;
     private int modalAutoDeleteKeep;
+    private boolean modalShowReflections;
+    private int modalShowReflectionsCount;
     private static PrintWriter stderr;
     private FilterWorker flowFilterWorker;
     private static int sortOrder;
@@ -202,7 +216,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 ImageIcon iconNewWindow = new ImageIcon(new ImageIcon(getClass().getResource("/hvqzao/flow/resources/newwindow.png")).getImage().getScaledInstance(13, 13, java.awt.Image.SCALE_SMOOTH));
                 ImageIcon iconCheckbox = new ImageIcon(new ImageIcon(getClass().getResource("/hvqzao/flow/resources/checkbox.png")).getImage().getScaledInstance(13, 13, java.awt.Image.SCALE_SMOOTH));
                 Dimension iconDimension = new Dimension(24, 24);
-
+                
                 // flow tab prolog: vertical split
                 flowTab = new JSplitPane(JSplitPane.VERTICAL_SPLIT);
                 callbacks.customizeUiComponent(flowTab);
@@ -272,6 +286,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 flowFilterCaptureSourceExtender = flowFilterPopup.getFlowFilterCaptureSourceExtender();
                 flowFilterCaptureSourceExtenderOnly = flowFilterPopup.getFlowFilterCaptureSourceExtenderOnly();
                 flowFilterInscope = flowFilterPopup.getFlowFilterInscope();
+                flowFilterOutofscope = flowFilterPopup.getFlowFilterOutofscope();
                 flowFilterParametrized = flowFilterPopup.getFlowFilterParametrized();
                 flowFilterSearchCaseSensitive = flowFilterPopup.getFlowFilterSearchCaseSensitive();
                 flowFilterSearchField = flowFilterPopup.getFlowFilterSearchField();
@@ -354,7 +369,22 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                         flowFilterUpdate();
                     }
                 });
-                flowFilterInscope.addActionListener(flowFilterScopeUpdateAction);
+                //flowFilterInscope.addActionListener(flowFilterScopeUpdateAction);
+                //flowFilterOutofscope.addActionListener(flowFilterScopeUpdateAction);
+                flowFilterInscope.addActionListener(new ActionListener() {
+                    @Override
+                    public void actionPerformed(ActionEvent e) {
+                        flowFilterOutofscope.setSelected(false);
+                        flowFilterUpdate();
+                    }
+                });
+                flowFilterOutofscope.addActionListener(new ActionListener() {
+                    @Override
+                    public void actionPerformed(ActionEvent e) {
+                        flowFilterInscope.setSelected(false);
+                        flowFilterUpdate();
+                    }
+                });
                 flowFilterParametrized.addActionListener(flowFilterScopeUpdateAction);
                 flowFilterSearchCaseSensitive.addActionListener(flowFilterScopeUpdateAction);
                 flowFilterSearchNegative.addActionListener(flowFilterScopeUpdateAction);
@@ -703,6 +733,14 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                                     flowTableSorter.sort();
                                 }
                             }
+                            if (showReflections != modalShowReflections) {
+                                showReflections = modalShowReflections;
+                                callbacks.saveExtensionSetting("showReflections", showReflections ? "1" : "0");
+                            }
+                            if (showReflectionsCount != modalShowReflectionsCount) {
+                                showReflectionsCount = modalShowReflectionsCount;
+                                callbacks.saveExtensionSetting("showReflectionsCount", String.valueOf(showReflectionsCount));
+                            }
                         }
                     }
                 });
@@ -722,6 +760,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 autoPopulate = "1".equals(callbacks.loadExtensionSetting("autoPopulateProxy"));
                 autoDeleteKeep = validateAutoDeleteKeep(callbacks.loadExtensionSetting("autoDeleteKeep"));
                 autoDelete = "1".equals(callbacks.loadExtensionSetting("autoDelete"));
+                showReflections = "0".equals(callbacks.loadExtensionSetting("showReflections")) == false;
+                showReflectionsCount = parseReflectionsCount(callbacks.loadExtensionSetting("showReflectionsCount"));
                 //
 
                 //
@@ -731,6 +771,14 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                     //callbacks.printOutput("Initializing extension with contents of Burp Proxy...");
                     (new PopulateWorker(callbacks.getProxyHistory())).execute();
                 }
+
+                //Set<Map.Entry<Object, Object>> entries = UIManager.getLookAndFeelDefaults().entrySet();
+                //for (Map.Entry<Object, Object> entry : entries) {
+                //    if (entry.getValue() instanceof Color) {
+                //        stderr.println(String.valueOf(entry.getKey()) + "\t" + String.valueOf(UIManager.getColor(entry.getKey())) + "\t" + String.valueOf(entry.getValue()));
+                //    }
+                //}
+
                 //callbacks.printOutput("Loaded.");
                 // TODO end main
             }
@@ -954,7 +1002,9 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         //
         // wrap optionsPane
         wrapper.getScrollPane().getViewport().add(addNewIssue);
-        dialog.setBounds(100, 100, 1070, 670);
+        //dialog.setBounds(100, 100, 1070, 670);
+        Dimension dim = ((JComponent) addNewIssue).getPreferredSize();
+        dialog.setBounds(100, 100, (int) Math.round(dim.getWidth() * 1.33), (int) Math.round(dim.getHeight() * 1.50));
         dialog.setContentPane(wrapper);
         //
         modalResult = false;
@@ -988,7 +1038,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 dialog.dispose();
             }
         });
-        dialog.setLocationRelativeTo(flowComponent);
+        dialog.setLocationRelativeTo(null);
         dialog.setVisible(true);
         //
         return modalResult;
@@ -1011,7 +1061,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         //
         // wrap optionsPane
         wrapper.getScrollPane().getViewport().add(optionsPane);
-        dialog.setBounds(100, 100, 526, 420);
+        dialog.setBounds(100, 100, 526, 500);
         dialog.setContentPane(wrapper);
         //
         modalResult = false;
@@ -1021,6 +1071,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         optionsPane.getAutoPopulate().setSelected(autoPopulate);
         optionsPane.getAutoDelete().setSelected(autoDelete);
         optionsPane.getAutoDeleteKeep().setText(String.valueOf(autoDeleteKeep));
+        optionsPane.getShowReflections().setSelected(showReflections);
+        optionsPane.getShowReflectionsCount().setText(String.valueOf(showReflectionsCount));
         //
         JButton ok = wrapper.getOkButton();
         callbacks.customizeUiComponent(ok);
@@ -1032,6 +1084,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 modalAutoPopulate = optionsPane.getAutoPopulate().isSelected();
                 modalAutoDelete = optionsPane.getAutoDelete().isSelected();
                 modalAutoDeleteKeep = validateAutoDeleteKeep(optionsPane.getAutoDeleteKeep().getText());
+                modalShowReflections = optionsPane.getShowReflections().isSelected();
+                modalShowReflectionsCount = parseReflectionsCount(optionsPane.getShowReflectionsCount().getText());
                 dialog.dispose();
             }
         });
@@ -1310,6 +1364,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
     // flow filter default
     private void flowFilterSetDefaults() {
         flowFilterInscope.setSelected(false);
+        flowFilterOutofscope.setSelected(false);
         flowFilterParametrized.setSelected(false);
         flowFilterSearchField.setText("");
         flowFilterSearchCaseSensitive.setSelected(false);
@@ -1387,6 +1442,10 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         boolean filterAll = true;
         if (flowFilterInscope.isSelected()) {
             filterDescription.append("In-scope, ");
+            filterAll = false;
+        }
+        if (flowFilterOutofscope.isSelected()) {
+            filterDescription.append("Out-of-scope, ");
             filterAll = false;
         }
         if (flowFilterParametrized.isSelected()) {
@@ -1592,6 +1651,10 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 }
                 // in-scope
                 if (result && flowFilterInscope.isSelected() && !callbacks.isInScope(flowEntry.url)) {
+                    result = false;
+                }
+                // out-of-scope
+                if (result && flowFilterOutofscope.isSelected() && callbacks.isInScope(flowEntry.url)) {
                     result = false;
                 }
                 // parametrized
@@ -1860,7 +1923,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                     case 3:
                         return flowEntry.method;
                     case 4:
-                        return flowEntry.getQueryPath(); //url.getPath();
+                        return flowEntry.getPath(); //flowEntry.getQueryPath();
                     case 5:
                         return new String(new char[flowEntry.getReflections().size()]).replace("\0", "|");
                     case 6:
@@ -1936,6 +1999,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         private String mime;
         private final Date date;
         private String comment;
+        private final String path;
         private final String queryPath;
         private final ArrayList<IParameter> reflections;
         private final IHttpService service;
@@ -1990,6 +2054,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
             url = requestInfo.getUrl();
             service = messageInfo.getHttpService();
             reflections = new ArrayList<>();
+            path = url.getPath();
             {
                 StringBuilder pathBuilder = new StringBuilder(url.getPath());
                 String query = url.getQuery();
@@ -2036,6 +2101,10 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
          */
         public String getQueryPath() {
             return queryPath;
+        }
+
+        public String getPath() {
+            return path;
         }
 
         public ArrayList<IParameter> getReflections() {
@@ -2362,44 +2431,62 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         @Override
         public Component getTableCellRendererComponent(JTable table, Object value, boolean isSelected, boolean hasFocus, int row, int column) {
             final Component c = super.getTableCellRendererComponent(table, value, isSelected, hasFocus, row, column);
-            // c.setBackground(row % 2 == 0 ? Color.LIGHT_GRAY : Color.WHITE);
-            //if (!isSelected && tempy != null && flowTable.convertRowIndexToModel(row) == flow.indexOf(tempy)) {
-            //    c.setForeground(Color.blue);
-            //} else {
-            //    c.setForeground(Color.black);
-            //}
             int modelRow = table.convertRowIndexToModel(row);
             FlowEntry entry = flow.get(modelRow);
-            int r = 0, g = 0, b = 0;
-            if (entry.status == 404 || entry.status == 403) {
-                r += 196;
-                g += 128;
-                b += 128;
-            }
-            if (entry.status == 500) {
-                g += 196;
-            }
-            if (entry.toolFlag != IBurpExtenderCallbacks.TOOL_PROXY) {
-                b += 196;
-            }
-            if (r > 255) {
-                r = 255;
-            }
-            if (g > 255) {
-                g = 255;
-            }
-            if (b > 255) {
-                b = 255;
-            }
-            c.setForeground(new Color(r, g, b));
+            if (ThemeHelper.isDarkTheme() == false) {
+                // c.setBackground(row % 2 == 0 ? Color.LIGHT_GRAY : Color.WHITE);
+                //if (!isSelected && tempy != null && flowTable.convertRowIndexToModel(row) == flow.indexOf(tempy)) {
+                //    c.setForeground(Color.blue);
+                //} else {
+                //    c.setForeground(Color.black);
+                //}
+                int r = 0, g = 0, b = 0;
+                if (entry.status == 404 || entry.status == 403) {
+                    r += 196;
+                    g += 128;
+                    b += 128;
+                }
+                if (entry.status == 500) {
+                    g += 196;
+                }
+                if (entry.toolFlag != IBurpExtenderCallbacks.TOOL_PROXY) {
+                    b += 196;
+                }
+                if (r > 255) {
+                    r = 255;
+                }
+                if (g > 255) {
+                    g = 255;
+                }
+                if (b > 255) {
+                    b = 255;
+                }
+                c.setForeground(new Color(r, g, b));
 
-            c.setBackground(cellBackground(table.getRowCount(), row, isSelected));
+                c.setBackground(ThemeHelper.cellBackground(table.getRowCount(), row, isSelected));
+            }
 
             final ArrayList<String> reflections = new ArrayList<>();
-            for (IParameter reflection : entry.getReflections()) {
-                reflections.add(new StringBuilder(" &nbsp; &nbsp; (").append(paramType(reflection.getType())).append(") ").append(reflection.getName()).append("=").append(reflection.getValue()).toString());
+            final ArrayList<IParameter> allReflections = entry.getReflections();
+            int reflectionsAmount = allReflections.size();
+            if (reflectionsAmount > showReflectionsCount) {
+                reflectionsAmount = showReflectionsCount;
             }
-            if (reflections.size() > 0) {
+            if (allReflections.size() > 0) {
+                for (IParameter reflection : allReflections.subList(0, reflectionsAmount)) {
+                    String param = reflection.getName();
+                    if (param.length() > 50) {
+                        param = param.substring(0, 50 - 3) + "...";
+                    }
+                    String val = reflection.getValue();
+                    if (val.length() > 50) {
+                        val = val.substring(0, 50 - 3) + "...";
+                    }
+                    reflections.add(new StringBuilder(" &nbsp; &nbsp; (").append(paramType(reflection.getType())).append(") ").append(param).append("=").append(val).toString());
+                }
+                if (allReflections.size() > showReflectionsCount) {
+                    reflections.add("...");
+                }
                 ((JLabel) c).setToolTipText(new StringBuilder("<html>Reflections:<br/>").append(String.join("<br/>", reflections)).append("</html>").toString());
             } else {
                 ((JLabel) c).setToolTipText(null);
@@ -2463,5 +2550,23 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
 
     public static PrintWriter getStderr() {
         return stderr;
+    }
+
+    private int parseReflectionsCount(String text) {
+        int result = showReflectionsCountDefault;
+        if (text != null) {
+            try {
+                showReflectionsCount = Integer.parseInt(text);
+                if (showReflectionsCount > showReflectionsCountMax) {
+                    showReflectionsCount = showReflectionsCountMax;
+                }
+                if (showReflectionsCount < 0) {
+                    showReflectionsCount = 0;
+                }
+            } catch (NumberFormatException ex) {
+                // do nothing
+            }
+        }
+        return result;
     }
 }
