@@ -2,8 +2,8 @@ Uuid: ee1c45f4cc084304b2af4b7e92c0a49d
 ExtensionType: 1
 Name: Flow
 RepoName: flow
-ScreenVersion: 1.12
-SerialVersion: 6
+ScreenVersion: 1.24
+SerialVersion: 8
 MinPlatformVersion: 0
 ProOnly: False
 Author: Marcin Woloszyn
