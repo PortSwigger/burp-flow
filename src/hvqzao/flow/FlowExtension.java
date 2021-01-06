@@ -77,7 +77,11 @@ import javax.swing.event.RowSorterListener;
 
 public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScopeChangeListener, IExtensionStateListener {
 
-    private final String version = "Flow v1.24 (2019-05-20)";
+    private final String version = "Flow v1.25 (2020-12-16)";
+    //
+    // Changes in v1.25:
+    // - fixed support for Dark mode, contribution of Jem Jensen, Thank You!
+    //
     // Changes in v1.24:
     // - rows coloring is now disabled on dark theme
     // - reflections count display limit introduced
@@ -672,6 +676,8 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
                 // flowTable renderer
                 flowTableCellRenderer = new FlowTableCellRenderer();
                 flowTable.setDefaultRenderer(Object.class, flowTableCellRenderer);
+		flowTable.setDefaultRenderer(Date.class, flowTableCellRenderer); // Newer JTable requires Date be explicitly added here or it won't be processed
+		flowTable.setDefaultRenderer(Integer.class, flowTableCellRenderer); // Added to fix row highlighting bug with ints
                 // flow bottom prolog: request & response
                 JSplitPane flowViewPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
                 flowViewPane.setResizeWeight(.5d);
@@ -2097,7 +2103,7 @@ public class FlowExtension implements IBurpExtender, ITab, IHttpListener, IScope
         /**
          * Returns URL's path along with query string (if present)
          *
-         * @return
+         * @return queryPath 
          */
         public String getQueryPath() {
             return queryPath;
